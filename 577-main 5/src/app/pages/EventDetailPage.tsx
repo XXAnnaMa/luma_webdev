@@ -43,7 +43,7 @@ function splitAddress(address: string) {
 export function EventDetailPage() {
   const { id } = useParams();
   const navigate = useNavigate();
-  const { events, getEventById, updateEvent, deleteEvent } = useEvents();
+  const { events, getEventById, registerEvent, unregisterEvent, updateEvent, deleteEvent } = useEvents();
   const { user } = useAuth();
 
   const [event, setEvent] = useState(events.find((e) => e.id === id) || null);
@@ -155,6 +155,7 @@ export function EventDetailPage() {
 
   const spotsLeft = event.participantLimit - event.currentParticipants;
   const isOwner = Boolean(user && event.userId === user.id);
+  const isRegistered = Boolean(event.isRegistered);
   const isFull = event.currentParticipants >= event.participantLimit;
   const categoryOptions = categories.filter((item) => item !== 'All');
   const displayDate = formatEventDate(event.date);
@@ -244,18 +245,38 @@ export function EventDetailPage() {
     if (isJoining || !event) return;
     setIsJoining(true);
     try {
-      const updated = await updateEvent(event.id, {
-        currentParticipants: event.currentParticipants + 1,
-      });
+      const updated = await registerEvent(event.id);
       setEvent(updated);
       setJoinNotice('Joined successfully.');
     } catch (error) {
-      if (error instanceof ApiError && error.status === 403) {
-        setJoinNotice('Join failed: backend forbids this operation (403). Backend needs a dedicated join/attend API.');
+      if (error instanceof ApiError && error.status === 409) {
+        setJoinNotice(error.message);
+      } else if (error instanceof ApiError && error.status === 401) {
+        setJoinNotice('Please sign in first.');
+      } else if (error instanceof ApiError && error.status === 400) {
+        setJoinNotice(error.message);
+      } else {
+        setJoinNotice(error instanceof Error ? error.message : 'Failed to join event.');
+      }
+    } finally {
+      setIsJoining(false);
+    }
+  };
+
+  const attemptCancelJoinEvent = async () => {
+    if (isJoining || !event) return;
+    setIsJoining(true);
+    try {
+      const updated = await unregisterEvent(event.id);
+      setEvent(updated);
+      setJoinNotice('Join canceled.');
+    } catch (error) {
+      if (error instanceof ApiError && (error.status === 409 || error.status === 400)) {
+        setJoinNotice(error.message);
       } else if (error instanceof ApiError && error.status === 401) {
         setJoinNotice('Please sign in first.');
       } else {
-        setJoinNotice(error instanceof Error ? error.message : 'Failed to join event.');
+        setJoinNotice(error instanceof Error ? error.message : 'Failed to cancel join.');
       }
     } finally {
       setIsJoining(false);
@@ -280,6 +301,22 @@ export function EventDetailPage() {
     }
 
     await attemptJoinEvent();
+  };
+
+  const handleCancelJoin = async () => {
+    if (isJoining) return;
+    setActionError(null);
+
+    if (!user) {
+      navigate('/login');
+      return;
+    }
+    if (isOwner) {
+      setJoinNotice('You are the organizer of this event.');
+      return;
+    }
+
+    await attemptCancelJoinEvent();
   };
 
   const handleEventCheckin = async () => {
@@ -558,38 +595,47 @@ export function EventDetailPage() {
             >
               <button
                 onClick={() => {
+                  if (isRegistered) {
+                    void handleCancelJoin();
+                    return;
+                  }
                   void handleJoinEvent();
                 }}
-                disabled={isJoining || isOwner || isFull}
+                disabled={isJoining || isOwner || (!isRegistered && isFull)}
                 className="w-full py-3 rounded-full transition-all duration-200 mb-4"
                 style={{
-                  backgroundColor: isOwner || isFull ? '#C7C7C7' : '#2E1A1A',
-                  color: '#FFFFFF',
+                  backgroundColor:
+                    isOwner || (!isRegistered && isFull)
+                      ? '#C7C7C7'
+                      : isRegistered
+                        ? 'transparent'
+                        : '#2E1A1A',
+                  color: isRegistered ? '#2E1A1A' : '#FFFFFF',
                   fontSize: '16px',
                   fontWeight: 500,
-                  border: 'none',
-                  cursor: isJoining || isOwner || isFull ? 'not-allowed' : 'pointer',
+                  border: isRegistered ? '1px solid #E5E2DA' : 'none',
+                  cursor: isJoining || isOwner || (!isRegistered && isFull) ? 'not-allowed' : 'pointer',
                   boxShadow: '0 4px 12px rgba(46, 26, 26, 0.2)',
                   opacity: isJoining ? 0.7 : 1,
                 }}
                 onMouseEnter={(e) => {
-                  if (isJoining || isOwner || isFull) return;
+                  if (isJoining || isOwner || (!isRegistered && isFull)) return;
                   e.currentTarget.style.transform = 'translateY(-2px)';
                   e.currentTarget.style.boxShadow = '0 6px 16px rgba(46, 26, 26, 0.3)';
                 }}
                 onMouseLeave={(e) => {
-                  if (isJoining || isOwner || isFull) return;
+                  if (isJoining || isOwner || (!isRegistered && isFull)) return;
                   e.currentTarget.style.transform = 'translateY(0)';
                   e.currentTarget.style.boxShadow = '0 4px 12px rgba(46, 26, 26, 0.2)';
                 }}
               >
                 {isOwner
                   ? 'Organizer Event'
-                  : isFull
+                  : !isRegistered && isFull
                     ? 'Event Full'
                     : isJoining
-                      ? 'Joining...'
-                      : 'Join Event'}
+                      ? (isRegistered ? 'Cancelling...' : 'Joining...')
+                      : (isRegistered ? 'Cancel Join' : 'Join Event')}
               </button>
 
               <p style={{ fontSize: '12px', color: '#6B6B6B', textAlign: 'center' }}>

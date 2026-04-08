@@ -30,7 +30,7 @@ export function Navbar() {
 
   return (
     <nav
-      className="max-w-7xl mx-auto px-8 py-6 grid grid-cols-[1fr_auto_1fr] items-center gap-6"
+      className="w-full px-8 py-6 grid grid-cols-[1fr_auto_1fr] items-center gap-6"
       style={{ backgroundColor: 'transparent' }}
     >
       <h2

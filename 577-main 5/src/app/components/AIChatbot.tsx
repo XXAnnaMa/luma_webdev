@@ -361,8 +361,12 @@ export function AIChatbot() {
             <div className="flex items-center gap-3">
               <MessageCircle size={24} />
               <div>
-                <h3 style={{ fontSize: '16px', fontWeight: 600, margin: 0 }}>Event Assistant</h3>
-                <p style={{ fontSize: '12px', opacity: 0.9, margin: 0 }}>Always here to help</p>
+                <h3 style={{ fontSize: '16px', fontWeight: 600, margin: 0, color: '#FFFFFF' }}>
+                  Event Assistant
+                </h3>
+                <p style={{ fontSize: '12px', opacity: 0.9, margin: 0, color: '#FFFFFF' }}>
+                  Always here to help
+                </p>
               </div>
             </div>
             <button

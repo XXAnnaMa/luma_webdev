@@ -95,11 +95,12 @@ function distanceKmBetween(
 
 export function ExplorePage() {
   const navigate = useNavigate();
-  const { isAuthenticated, loading: authLoading } = useAuth();
+  const { isAuthenticated, loading: authLoading, user } = useAuth();
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedCategory, setSelectedCategory] = useState('All');
   const [selectedDate, setSelectedDate] = useState('');
   const [selectedTimeBucket, setSelectedTimeBucket] = useState('All');
+  const [eventScope, setEventScope] = useState<'all' | 'created'>('all');
   const [distanceKm, setDistanceKm] = useState(25);
   const [useDistanceFilter, setUseDistanceFilter] = useState(false);
   const [distanceCenter, setDistanceCenter] = useState(DEFAULT_DISTANCE_CENTER);
@@ -112,14 +113,17 @@ export function ExplorePage() {
   const [diceCandidate, setDiceCandidate] = useState<Event | null>(null);
   const [isShakeMatching, setIsShakeMatching] = useState(false);
   const [shakeTimeLeft, setShakeTimeLeft] = useState(0);
+  const [shakeCountdownEndsAt, setShakeCountdownEndsAt] = useState<number | null>(null);
   const [shakeNotice, setShakeNotice] = useState<string | null>(null);
   const [shakeCandidate, setShakeCandidate] = useState<Event | null>(null);
   const [matchedPartnerName, setMatchedPartnerName] = useState<string | null>(null);
+  const [shakeDecisionStatus, setShakeDecisionStatus] = useState<'pending' | 'joined' | null>(null);
+  const [isShakeJoining, setIsShakeJoining] = useState(false);
   const [isListeningForShake, setIsListeningForShake] = useState(false);
   const [isRequestingShakePermission, setIsRequestingShakePermission] = useState(false);
   const shakeCooldownRef = useRef(0);
   const shakeLastMagnitudeRef = useRef<number | null>(null);
-  const { events, loading, error, fetchEvents, updateEvent } = useEvents();
+  const { events, loading, error, fetchEvents, registerEvent, unregisterEvent } = useEvents();
   const normalizedSelectedDate = normalizeDate(selectedDate);
 
   useEffect(() => {
@@ -168,6 +172,18 @@ export function ExplorePage() {
       })
     : timeFilteredEvents;
 
+  const createdEvents = user
+    ? filteredEvents.filter((event) => event.userId === user.id)
+    : [];
+
+  const visibleEvents = eventScope === 'created' ? createdEvents : filteredEvents;
+
+  useEffect(() => {
+    if (!user && eventScope === 'created') {
+      setEventScope('all');
+    }
+  }, [user, eventScope]);
+
   const handleUseMyLocation = () => {
     setIsLocating(true);
     requestCurrentPosition()
@@ -195,16 +211,24 @@ export function ExplorePage() {
     setDiceNotice(null);
     setDiceCandidate(null);
 
-    if (filteredEvents.length === 0) {
-      setDiceNotice('No events match current filters. Adjust filters and try again.');
+    if (visibleEvents.length === 0) {
+      setDiceNotice(
+        eventScope === 'created'
+          ? 'No created events match the current filters.'
+          : 'No events match current filters. Adjust filters and try again.'
+      );
       return;
     }
 
     setIsRollingDice(true);
     await new Promise((resolve) => window.setTimeout(resolve, 450));
-    const selected = filteredEvents[Math.floor(Math.random() * filteredEvents.length)];
+    const selected = visibleEvents[Math.floor(Math.random() * visibleEvents.length)];
     setDiceCandidate(selected);
-    setDiceNotice('Random event selected. Confirm below to join.');
+    setDiceNotice(
+      selected.isRegistered
+        ? 'Random event selected. You already joined this event.'
+        : 'Random event selected. Confirm below to join.'
+    );
     setIsRollingDice(false);
   };
 
@@ -218,17 +242,39 @@ export function ExplorePage() {
 
     setIsDiceJoining(true);
     try {
-      await updateEvent(diceCandidate.id, {
-        currentParticipants: diceCandidate.currentParticipants + 1,
-      });
-      setDiceNotice(`Joined "${diceCandidate.title}" successfully.`);
+      const updated = await registerEvent(diceCandidate.id);
+      setDiceCandidate(updated);
+      setDiceNotice(`Joined "${updated.title}" successfully.`);
     } catch (err) {
-      if (err instanceof ApiError && err.status === 403) {
-        setDiceNotice('Join blocked by backend permissions (403).');
+      if (err instanceof ApiError && err.status === 409) {
+        setDiceNotice(err.message);
+      } else if (err instanceof ApiError && err.status === 401) {
+        setDiceNotice('Please sign in first.');
+      } else if (err instanceof ApiError && err.status === 400) {
+        setDiceNotice(err.message);
+      } else {
+        setDiceNotice(err instanceof Error ? err.message : 'Failed to join selected event.');
+      }
+    } finally {
+      setIsDiceJoining(false);
+    }
+  };
+
+  const handleCancelDiceJoin = async () => {
+    if (!diceCandidate || isDiceJoining) return;
+
+    setIsDiceJoining(true);
+    try {
+      const updated = await unregisterEvent(diceCandidate.id);
+      setDiceCandidate(updated);
+      setDiceNotice(`Canceled your join for "${updated.title}".`);
+    } catch (err) {
+      if (err instanceof ApiError && (err.status === 409 || err.status === 400)) {
+        setDiceNotice(err.message);
       } else if (err instanceof ApiError && err.status === 401) {
         setDiceNotice('Please sign in first.');
       } else {
-        setDiceNotice(err instanceof Error ? err.message : 'Failed to join selected event.');
+        setDiceNotice(err instanceof Error ? err.message : 'Failed to cancel this event join.');
       }
     } finally {
       setIsDiceJoining(false);
@@ -239,9 +285,15 @@ export function ExplorePage() {
     const preferredId = payload.suggested_event?.id;
     if (!preferredId) return null;
 
-    const exact = filteredEvents.find((event) => event.id === preferredId)
+    const exact = visibleEvents.find((event) => event.id === preferredId)
       || events.find((event) => event.id === preferredId);
     return exact || null;
+  };
+
+  const clearShakeMatchSelection = () => {
+    setShakeCandidate(null);
+    setMatchedPartnerName(null);
+    setShakeDecisionStatus(null);
   };
 
   const applyShakeMatchResult = (payload: ShakeMatchResponse) => {
@@ -250,9 +302,21 @@ export function ExplorePage() {
 
     setMatchedPartnerName(partnerName);
     setShakeCandidate(suggestedEvent);
+    setShakeDecisionStatus(
+      suggestedEvent ? (suggestedEvent.isRegistered ? 'joined' : 'pending') : null
+    );
+
+    if (suggestedEvent?.isRegistered) {
+      setShakeNotice(
+        partnerName
+          ? `Matched with ${partnerName}. You already joined "${suggestedEvent.title}".`
+          : `Matched successfully. You already joined "${suggestedEvent.title}".`
+      );
+      return;
+    }
 
     if (suggestedEvent && partnerName) {
-      setShakeNotice(`Matched with ${partnerName}. We found an event for both of you.`);
+      setShakeNotice(`Matched with ${partnerName}. Do you want to join this event together?`);
       return;
     }
 
@@ -269,11 +333,80 @@ export function ExplorePage() {
     setShakeNotice('Matched successfully.');
   };
 
+  const handleAcceptShakeMatch = async () => {
+    if (!shakeCandidate || isShakeJoining) return;
+
+    if (shakeCandidate.currentParticipants >= shakeCandidate.participantLimit) {
+      setShakeNotice('This suggested event is already full. Try matching again.');
+      setShakeDecisionStatus(null);
+      return;
+    }
+
+    setIsShakeJoining(true);
+    try {
+      const updated = await registerEvent(shakeCandidate.id);
+      setShakeCandidate(updated);
+      setShakeDecisionStatus('joined');
+      setShakeNotice(
+        matchedPartnerName
+          ? `You accepted the match. You and ${matchedPartnerName} can join "${updated.title}".`
+          : `You accepted the match and joined "${updated.title}".`
+      );
+    } catch (err) {
+      if (err instanceof ApiError && err.status === 409) {
+        setShakeNotice(err.message);
+      } else if (err instanceof ApiError && err.status === 401) {
+        setShakeNotice('Please sign in first.');
+      } else if (err instanceof ApiError && err.status === 400) {
+        setShakeNotice(err.message);
+      } else {
+        setShakeNotice(err instanceof Error ? err.message : 'Failed to join the matched event.');
+      }
+    } finally {
+      setIsShakeJoining(false);
+    }
+  };
+
+  const handleDeclineShakeMatch = () => {
+    const partnerName = matchedPartnerName;
+    clearShakeMatchSelection();
+    setShakeNotice(
+      partnerName
+        ? `You declined the match with ${partnerName}. You can try Shake to Match again anytime.`
+        : 'You declined this match. You can try again anytime.'
+    );
+  };
+
+  const handleCancelShakeJoin = async () => {
+    if (!shakeCandidate || isShakeJoining) return;
+
+    setIsShakeJoining(true);
+    try {
+      const updated = await unregisterEvent(shakeCandidate.id);
+      setShakeCandidate(updated);
+      setShakeDecisionStatus('pending');
+      setShakeNotice(
+        matchedPartnerName
+          ? `You canceled the join for "${updated.title}". You can still decide with ${matchedPartnerName}.`
+          : `You canceled the join for "${updated.title}".`
+      );
+    } catch (err) {
+      if (err instanceof ApiError && (err.status === 409 || err.status === 400)) {
+        setShakeNotice(err.message);
+      } else if (err instanceof ApiError && err.status === 401) {
+        setShakeNotice('Please sign in first.');
+      } else {
+        setShakeNotice(err instanceof Error ? err.message : 'Failed to cancel the matched event.');
+      }
+    } finally {
+      setIsShakeJoining(false);
+    }
+  };
+
   const handleStartShakeMatch = async (trigger: 'button' | 'shake') => {
     if (isShakeMatching) return;
 
-    setShakeCandidate(null);
-    setMatchedPartnerName(null);
+    clearShakeMatchSelection();
     setShakeNotice(null);
 
     if (authLoading) {
@@ -297,6 +430,7 @@ export function ExplorePage() {
       );
       setIsShakeMatching(true);
       setShakeTimeLeft(SHAKE_MATCH_WINDOW_SECONDS);
+      setShakeCountdownEndsAt(Date.now() + SHAKE_MATCH_WINDOW_SECONDS * 1000);
 
       const activation = await apiRequest<ShakeMatchResponse>(SHAKE_MATCH_ACTIVATE_ENDPOINT, {
         method: 'POST',
@@ -355,6 +489,7 @@ export function ExplorePage() {
         // Ignore cleanup failures; TTL on the backend still protects the pool.
       });
       setShakeTimeLeft(0);
+      setShakeCountdownEndsAt(null);
       setIsShakeMatching(false);
     }
   };
@@ -396,6 +531,25 @@ export function ExplorePage() {
   };
 
   useEffect(() => {
+    if (!isShakeMatching || shakeCountdownEndsAt === null) return;
+
+    const syncCountdown = () => {
+      const remaining = Math.max(
+        0,
+        Math.ceil((shakeCountdownEndsAt - Date.now()) / 1000)
+      );
+      setShakeTimeLeft(remaining);
+    };
+
+    syncCountdown();
+    const intervalId = window.setInterval(syncCountdown, 250);
+
+    return () => {
+      window.clearInterval(intervalId);
+    };
+  }, [isShakeMatching, shakeCountdownEndsAt]);
+
+  useEffect(() => {
     if (!isListeningForShake) return;
 
     const handleDeviceMotion = (event: DeviceMotionEvent) => {
@@ -425,7 +579,7 @@ export function ExplorePage() {
     return () => {
       window.removeEventListener('devicemotion', handleDeviceMotion);
     };
-  }, [isListeningForShake, isShakeMatching, authLoading, isAuthenticated, navigate, events, filteredEvents]);
+  }, [isListeningForShake, isShakeMatching, authLoading, isAuthenticated, navigate, events, visibleEvents]);
 
   return (
     <div className="min-h-screen" style={{ backgroundColor: '#F7F5F0' }}>
@@ -667,9 +821,54 @@ export function ExplorePage() {
 
           {/* Events Grid */}
           <main className="flex-1">
+            {isAuthenticated && (
+              <div className="mb-4 flex items-center gap-3">
+                <button
+                  onClick={() => setEventScope('all')}
+                  className="px-4 py-2 rounded-full transition-all"
+                  style={{
+                    backgroundColor: eventScope === 'all' ? '#2E1A1A' : '#FFFFFF',
+                    color: eventScope === 'all' ? '#FFFFFF' : '#2E1A1A',
+                    border: eventScope === 'all' ? 'none' : '1px solid #E5E2DA',
+                    cursor: 'pointer',
+                    boxShadow:
+                      eventScope === 'all'
+                        ? '0 4px 12px rgba(46, 26, 26, 0.16)'
+                        : '0 2px 6px rgba(46, 26, 26, 0.04)',
+                  }}
+                >
+                  All Events
+                </button>
+
+                <button
+                  onClick={() => setEventScope('created')}
+                  className="px-4 py-2 rounded-full transition-all"
+                  style={{
+                    backgroundColor: eventScope === 'created' ? '#C2B280' : '#FFFFFF',
+                    color: '#2E1A1A',
+                    border: eventScope === 'created' ? 'none' : '1px solid #E5E2DA',
+                    cursor: 'pointer',
+                    fontWeight: eventScope === 'created' ? 600 : 500,
+                    boxShadow:
+                      eventScope === 'created'
+                        ? '0 4px 12px rgba(194, 178, 128, 0.24)'
+                        : '0 2px 6px rgba(46, 26, 26, 0.04)',
+                  }}
+                >
+                  My Created Events
+                </button>
+              </div>
+            )}
+
             <div className="mb-6 flex items-center justify-between">
               <p style={{ fontSize: '16px', color: '#6B6B6B' }}>
-                {loading ? 'Loading events...' : error ? error : filteredEvents.length + ' events found'}
+                {loading
+                  ? 'Loading events...'
+                  : error
+                    ? error
+                    : eventScope === 'created'
+                      ? `${visibleEvents.length} created event${visibleEvents.length === 1 ? '' : 's'}`
+                      : `${visibleEvents.length} events found`}
               </p>
               <div className="flex items-center gap-2">
                 <button
@@ -780,19 +979,25 @@ export function ExplorePage() {
                       </button>
                       <button
                         onClick={() => {
+                          if (diceCandidate.isRegistered) {
+                            void handleCancelDiceJoin();
+                            return;
+                          }
                           void handleConfirmDiceJoin();
                         }}
                         disabled={isDiceJoining}
                         className="px-4 py-2 rounded-full"
                         style={{
-                          backgroundColor: '#2E1A1A',
-                          color: '#FFFFFF',
-                          border: 'none',
+                          backgroundColor: diceCandidate.isRegistered ? 'transparent' : '#2E1A1A',
+                          color: diceCandidate.isRegistered ? '#2E1A1A' : '#FFFFFF',
+                          border: diceCandidate.isRegistered ? '1px solid #E5E2DA' : 'none',
                           cursor: isDiceJoining ? 'not-allowed' : 'pointer',
                           opacity: isDiceJoining ? 0.7 : 1,
                         }}
                       >
-                        {isDiceJoining ? 'Joining...' : 'Confirm Join'}
+                        {isDiceJoining
+                          ? (diceCandidate.isRegistered ? 'Cancelling...' : 'Joining...')
+                          : (diceCandidate.isRegistered ? 'Cancel Join' : 'Confirm Join')}
                       </button>
                       <button
                         onClick={() => {
@@ -849,6 +1054,19 @@ export function ExplorePage() {
                   </p>
                 )}
 
+                {isShakeMatching && (
+                  <p
+                    style={{
+                      fontSize: '13px',
+                      color: '#6B6B6B',
+                      marginTop: shakeNotice ? '8px' : 0,
+                      marginBottom: shakeCandidate ? '12px' : '10px',
+                    }}
+                  >
+                    Time left: {shakeTimeLeft}s
+                  </p>
+                )}
+
                 {matchedPartnerName && (
                   <p style={{ fontSize: '13px', color: '#6B6B6B', marginBottom: shakeCandidate ? '12px' : 0 }}>
                     Nearby match: {matchedPartnerName}
@@ -864,41 +1082,135 @@ export function ExplorePage() {
                       {formatEventDateLabel(shakeCandidate.date)} • {formatEventTimeLabel(shakeCandidate.time)} • {shakeCandidate.category}
                     </p>
                     <div className="flex gap-3">
-                      <button
-                        onClick={() => navigate(`/event/${shakeCandidate.id}`)}
-                        className="px-4 py-2 rounded-full"
-                        style={{
-                          backgroundColor: '#2E1A1A',
-                          color: '#FFFFFF',
-                          border: 'none',
-                          cursor: 'pointer',
-                        }}
-                      >
-                        Open Suggested Event
-                      </button>
-                      <button
-                        onClick={() => {
-                          setShakeCandidate(null);
-                          setShakeNotice(null);
-                          setMatchedPartnerName(null);
-                        }}
-                        className="px-4 py-2 rounded-full"
-                        style={{
-                          backgroundColor: 'transparent',
-                          color: '#2E1A1A',
-                          border: '1px solid #E5E2DA',
-                          cursor: 'pointer',
-                        }}
-                      >
-                        Dismiss
-                      </button>
+                      {shakeDecisionStatus === 'pending' ? (
+                        <>
+                          <button
+                            onClick={() => {
+                              void handleAcceptShakeMatch();
+                            }}
+                            disabled={isShakeJoining}
+                            className="px-4 py-2 rounded-full"
+                            style={{
+                              backgroundColor: '#2E1A1A',
+                              color: '#FFFFFF',
+                              border: 'none',
+                              cursor: isShakeJoining ? 'not-allowed' : 'pointer',
+                              opacity: isShakeJoining ? 0.7 : 1,
+                            }}
+                          >
+                            {isShakeJoining ? 'Joining...' : 'Join Event'}
+                          </button>
+                          <button
+                            onClick={handleDeclineShakeMatch}
+                            disabled={isShakeJoining}
+                            className="px-4 py-2 rounded-full"
+                            style={{
+                              backgroundColor: 'transparent',
+                              color: '#2E1A1A',
+                              border: '1px solid #E5E2DA',
+                              cursor: isShakeJoining ? 'not-allowed' : 'pointer',
+                              opacity: isShakeJoining ? 0.7 : 1,
+                            }}
+                          >
+                            Decline
+                          </button>
+                          <button
+                            onClick={() => navigate(`/event/${shakeCandidate.id}`)}
+                            className="px-4 py-2 rounded-full"
+                            style={{
+                              backgroundColor: '#F5F3EE',
+                              color: '#2E1A1A',
+                              border: '1px solid #E5E2DA',
+                              cursor: 'pointer',
+                            }}
+                          >
+                            View Event
+                          </button>
+                        </>
+                      ) : shakeCandidate.isRegistered || shakeDecisionStatus === 'joined' ? (
+                        <>
+                          <button
+                            onClick={() => navigate(`/event/${shakeCandidate.id}`)}
+                            className="px-4 py-2 rounded-full"
+                            style={{
+                              backgroundColor: '#2E1A1A',
+                              color: '#FFFFFF',
+                              border: 'none',
+                              cursor: 'pointer',
+                            }}
+                          >
+                            Open Suggested Event
+                          </button>
+                          <button
+                            onClick={() => {
+                              void handleCancelShakeJoin();
+                            }}
+                            disabled={isShakeJoining}
+                            className="px-4 py-2 rounded-full"
+                            style={{
+                              backgroundColor: 'transparent',
+                              color: '#2E1A1A',
+                              border: '1px solid #E5E2DA',
+                              cursor: isShakeJoining ? 'not-allowed' : 'pointer',
+                              opacity: isShakeJoining ? 0.7 : 1,
+                            }}
+                          >
+                            {isShakeJoining ? 'Cancelling...' : 'Cancel Join'}
+                          </button>
+                          <button
+                            onClick={() => {
+                              clearShakeMatchSelection();
+                              setShakeNotice(null);
+                            }}
+                            className="px-4 py-2 rounded-full"
+                            style={{
+                              backgroundColor: 'transparent',
+                              color: '#2E1A1A',
+                              border: '1px solid #E5E2DA',
+                              cursor: 'pointer',
+                            }}
+                          >
+                            Done
+                          </button>
+                        </>
+                      ) : (
+                        <>
+                          <button
+                            onClick={() => navigate(`/event/${shakeCandidate.id}`)}
+                            className="px-4 py-2 rounded-full"
+                            style={{
+                              backgroundColor: '#2E1A1A',
+                              color: '#FFFFFF',
+                              border: 'none',
+                              cursor: 'pointer',
+                            }}
+                          >
+                            Open Suggested Event
+                          </button>
+                          <button
+                            onClick={() => {
+                              clearShakeMatchSelection();
+                              setShakeNotice(null);
+                            }}
+                            className="px-4 py-2 rounded-full"
+                            style={{
+                              backgroundColor: 'transparent',
+                              color: '#2E1A1A',
+                              border: '1px solid #E5E2DA',
+                              cursor: 'pointer',
+                            }}
+                          >
+                            Done
+                          </button>
+                        </>
+                      )}
                     </div>
                   </>
                 )}
               </div>
             )}
 
-            {filteredEvents.length === 0 ? (
+            {visibleEvents.length === 0 ? (
               <div
                 className="text-center py-24 rounded-xl"
                 style={{
@@ -907,32 +1219,51 @@ export function ExplorePage() {
                 }}
               >
                 <p style={{ fontSize: '18px', color: '#6B6B6B' }}>
-                  No events found matching your criteria
+                  {eventScope === 'created'
+                    ? 'You have not created any events matching these filters'
+                    : 'No events found matching your criteria'}
                 </p>
 
-                <button
-                  onClick={() => {
-                    setSearchQuery('');
-                    setSelectedCategory('All');
-                    setSelectedDate('');
-                    setSelectedTimeBucket('All');
-                    setUseDistanceFilter(false);
-                    setDistanceKm(25);
-                  }}
-                  className="mt-4 px-6 py-2 rounded-full"
-                  style={{
-                    backgroundColor: '#2E1A1A',
-                    color: '#FFFFFF',
-                    border: 'none',
-                    cursor: 'pointer',
-                  }}
-                >
-                  Clear filters
-                </button>
+                <div className="mt-4 flex items-center justify-center gap-3">
+                  <button
+                    onClick={() => {
+                      setSearchQuery('');
+                      setSelectedCategory('All');
+                      setSelectedDate('');
+                      setSelectedTimeBucket('All');
+                      setUseDistanceFilter(false);
+                      setDistanceKm(25);
+                    }}
+                    className="px-6 py-2 rounded-full"
+                    style={{
+                      backgroundColor: '#2E1A1A',
+                      color: '#FFFFFF',
+                      border: 'none',
+                      cursor: 'pointer',
+                    }}
+                  >
+                    Clear filters
+                  </button>
+
+                  {eventScope === 'created' && (
+                    <button
+                      onClick={() => navigate('/post')}
+                      className="px-6 py-2 rounded-full"
+                      style={{
+                        backgroundColor: '#F5F3EE',
+                        color: '#2E1A1A',
+                        border: '1px solid #E5E2DA',
+                        cursor: 'pointer',
+                      }}
+                    >
+                      Create an Event
+                    </button>
+                  )}
+                </div>
               </div>
             ) : (
               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-                {filteredEvents.map((event) => (
+                {visibleEvents.map((event) => (
                   <EventCard
                     key={event.id}
                     event={event}

@@ -27,6 +27,7 @@ export interface Event {
 
   // Ownership (from backend)
   userId?: number;
+  isRegistered?: boolean;
   
   // Tags
   tags: string[];

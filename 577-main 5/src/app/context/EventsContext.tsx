@@ -13,6 +13,7 @@ import { getLocalEventImage } from '../lib/localEventImage';
 import { isValidEventTime } from '../lib/eventDate';
 
 interface EventRead {
+  isRegistered?: boolean;
   id: string;
   title: string;
   description: string;
@@ -41,6 +42,10 @@ interface EventListResponse {
 
 interface EventResponse {
   event: EventRead;
+}
+
+interface RegistrationResponse {
+  currentParticipants: number;
 }
 
 interface ListEventsParams {
@@ -84,6 +89,8 @@ interface EventsContextType {
   fetchEvents: (params?: ListEventsParams) => Promise<void>;
   getEventById: (id: string) => Promise<Event | null>;
   createEvent: (input: CreateEventInput) => Promise<Event>;
+  registerEvent: (id: string) => Promise<Event>;
+  unregisterEvent: (id: string) => Promise<Event>;
   updateEvent: (id: string, input: UpdateEventInput) => Promise<Event>;
   deleteEvent: (id: string) => Promise<void>;
 }
@@ -127,6 +134,7 @@ function normalizeEvent(raw: EventRead): Event {
     organizerEmail: cleanText(raw.organizerEmail),
     organizerPhone: cleanText(raw.organizerPhone ?? undefined) || undefined,
     userId: raw.userId,
+    isRegistered: Boolean(raw.isRegistered),
   };
 }
 
@@ -153,6 +161,18 @@ function buildEventsQuery(params: ListEventsParams = {}) {
 
   const queryText = query.toString();
   return queryText ? `?${queryText}` : '';
+}
+
+function withRegistrationState(
+  event: Event,
+  currentParticipants: number,
+  isRegistered: boolean
+): Event {
+  return {
+    ...event,
+    currentParticipants,
+    isRegistered,
+  };
 }
 
 export function EventsProvider({ children }: { children: ReactNode }) {
@@ -232,6 +252,58 @@ export function EventsProvider({ children }: { children: ReactNode }) {
     return normalized;
   }, []);
 
+  const registerEvent = useCallback(async (id: string) => {
+    const data = await apiRequest<RegistrationResponse>(`/api/v1/events/${id}/register`, {
+      method: 'POST',
+    });
+
+    const existing = events.find((event) => event.id === id);
+    if (existing) {
+      const updated = withRegistrationState(existing, data.currentParticipants, true);
+      setEvents((prev) =>
+        prev.map((event) => (event.id === id ? updated : event))
+      );
+      return updated;
+    }
+
+    const fetched = await getEventById(id);
+    if (!fetched) {
+      throw new Error('Joined the event, but failed to refresh its latest details.');
+    }
+
+    const updated = withRegistrationState(fetched, data.currentParticipants, true);
+    setEvents((prev) =>
+      prev.map((event) => (event.id === id ? updated : event))
+    );
+    return updated;
+  }, [events, getEventById]);
+
+  const unregisterEvent = useCallback(async (id: string) => {
+    const data = await apiRequest<RegistrationResponse>(`/api/v1/events/${id}/register`, {
+      method: 'DELETE',
+    });
+
+    const existing = events.find((event) => event.id === id);
+    if (existing) {
+      const updated = withRegistrationState(existing, data.currentParticipants, false);
+      setEvents((prev) =>
+        prev.map((event) => (event.id === id ? updated : event))
+      );
+      return updated;
+    }
+
+    const fetched = await getEventById(id);
+    if (!fetched) {
+      throw new Error('Canceled the join, but failed to refresh the event details.');
+    }
+
+    const updated = withRegistrationState(fetched, data.currentParticipants, false);
+    setEvents((prev) =>
+      prev.map((event) => (event.id === id ? updated : event))
+    );
+    return updated;
+  }, [events, getEventById]);
+
   const updateEvent = useCallback(
     async (id: string, input: UpdateEventInput) => {
       const payload = {
@@ -287,10 +359,12 @@ export function EventsProvider({ children }: { children: ReactNode }) {
       fetchEvents,
       getEventById,
       createEvent,
+      registerEvent,
+      unregisterEvent,
       updateEvent,
       deleteEvent,
     }),
-    [events, total, loading, error, fetchEvents, getEventById, createEvent, updateEvent, deleteEvent]
+    [events, total, loading, error, fetchEvents, getEventById, createEvent, registerEvent, unregisterEvent, updateEvent, deleteEvent]
   );
 
   return <EventsContext.Provider value={value}>{children}</EventsContext.Provider>;

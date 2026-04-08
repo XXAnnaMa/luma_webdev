@@ -51,6 +51,14 @@ class Settings(BaseSettings):
         default="",
         description="OpenAI API key for chatbot integration",
     )
+    openai_project_id: str = Field(
+        default="",
+        description="Optional OpenAI project ID for requests that require explicit project scope",
+    )
+    openai_organization_id: str = Field(
+        default="",
+        description="Optional OpenAI organization ID for requests that require explicit org scope",
+    )
     openai_model: str = Field(
         default="gpt-4o-mini",
         description="OpenAI chat model name",

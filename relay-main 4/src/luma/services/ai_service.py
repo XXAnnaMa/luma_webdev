@@ -68,7 +68,12 @@ class AIService:
         self.chat_repository = chat_repository
         self.event_repository = event_repository
         self.client = (
-            AsyncOpenAI(api_key=settings.openai_api_key, timeout=settings.openai_timeout_seconds)
+            AsyncOpenAI(
+                api_key=settings.openai_api_key,
+                timeout=settings.openai_timeout_seconds,
+                project=settings.openai_project_id or None,
+                organization=settings.openai_organization_id or None,
+            )
             if AsyncOpenAI
             else None
         )
