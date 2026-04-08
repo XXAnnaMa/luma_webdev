@@ -1,0 +1,14 @@
+@import 'tailwindcss' source(none);
+@source '../**/*.{js,ts,jsx,tsx}';
+
+@import 'tw-animate-css';
+
+/* Custom Map Marker Styles */
+.custom-marker {
+  background: transparent;
+  border: none;
+}
+
+.leaflet-container {
+  font-family: 'Inter', sans-serif;
+}

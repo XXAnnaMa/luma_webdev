@@ -1,0 +1,50 @@
+[build-system]
+requires = ["hatchling>=1.25.0"]
+build-backend = "hatchling.build"
+
+[project]
+name = "luma"
+version = "0.1.0"
+description = "Business-agnostic FastAPI REST API scaffold"
+readme = "README.md"
+requires-python = "==3.12.8"
+dependencies = [
+    "alembic>=1.16.0",
+    "asyncpg>=0.30.0",
+    "fastapi>=0.128.0",
+    "greenlet>=3.3.2",
+    "openai>=1.107.1",
+    "psycopg2-binary>=2.9.11",
+    "pydantic-settings>=2.11.0",
+    "redis>=6.4.0",
+    "sqlalchemy>=2.0.43",
+    "typer>=0.16.1",
+    "uvicorn[standard]>=0.40.0",
+    "bcrypt>=4.0.0",
+    "email-validator>=2.0.0",
+]
+
+[project.scripts]
+luma = "luma.cli:app"
+
+[dependency-groups]
+dev = [
+    "httpx>=0.28.1",
+    "pytest>=8.4.2",
+    "pytest-asyncio>=1.2.0",
+    "ruff>=0.13.0",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/luma"]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
