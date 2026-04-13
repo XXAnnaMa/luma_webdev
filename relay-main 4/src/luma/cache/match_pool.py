@@ -28,11 +28,18 @@ def _lock_key(uid_a: int, uid_b: int) -> str:
     return f"{_LOCK_PREFIX}:{lo}:{hi}"
 
 
-async def add_to_pool(user_id: int, lat: float, lng: float) -> None:
+async def add_to_pool(
+    user_id: int, lat: float, lng: float, candidate_event_ids: list[str] | None = None
+) -> None:
     """GEOADD user to pool and set meta key with TTL."""
     redis = get_redis()
     await redis.geoadd(_POOL_KEY, [lng, lat, str(user_id)])
-    meta = json.dumps({"activated_at": time.time()})
+    meta = json.dumps(
+        {
+            "activated_at": time.time(),
+            "candidate_event_ids": candidate_event_ids or [],
+        }
+    )
     await redis.set(_meta_key(user_id), meta, ex=_META_TTL)
 
 
@@ -93,6 +100,13 @@ async def get_meta_ttl(user_id: int) -> int:
     redis = get_redis()
     ttl = await redis.ttl(_meta_key(user_id))
     return max(0, ttl)
+
+
+async def get_meta(user_id: int) -> dict | None:
+    """Fetch stored pool metadata, or None if not found."""
+    redis = get_redis()
+    value = await redis.get(_meta_key(user_id))
+    return json.loads(value) if value is not None else None
 
 
 async def is_in_pool(user_id: int) -> bool:

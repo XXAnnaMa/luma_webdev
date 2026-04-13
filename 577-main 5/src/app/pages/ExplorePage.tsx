@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Navbar } from "../components/Navbar";
 import { useNavigate } from 'react-router-dom';
 import { categories } from '../data/eventsData';
@@ -100,7 +100,7 @@ export function ExplorePage() {
   const [selectedCategory, setSelectedCategory] = useState('All');
   const [selectedDate, setSelectedDate] = useState('');
   const [selectedTimeBucket, setSelectedTimeBucket] = useState('All');
-  const [eventScope, setEventScope] = useState<'all' | 'created'>('all');
+  const [eventScope, setEventScope] = useState<'all' | 'joined' | 'created'>('all');
   const [distanceKm, setDistanceKm] = useState(25);
   const [useDistanceFilter, setUseDistanceFilter] = useState(false);
   const [distanceCenter, setDistanceCenter] = useState(DEFAULT_DISTANCE_CENTER);
@@ -175,11 +175,29 @@ export function ExplorePage() {
   const createdEvents = user
     ? filteredEvents.filter((event) => event.userId === user.id)
     : [];
+  const joinedEvents = user
+    ? filteredEvents.filter((event) => event.isRegistered)
+    : [];
 
-  const visibleEvents = eventScope === 'created' ? createdEvents : filteredEvents;
+  const visibleEvents =
+    eventScope === 'created'
+      ? createdEvents
+      : eventScope === 'joined'
+        ? joinedEvents
+        : filteredEvents;
+  const shakeMatchCandidates = useMemo(
+    () =>
+      visibleEvents.filter(
+        (event) =>
+          !event.isRegistered &&
+          event.userId !== user?.id &&
+          event.currentParticipants < event.participantLimit
+      ),
+    [visibleEvents, user?.id]
+  );
 
   useEffect(() => {
-    if (!user && eventScope === 'created') {
+    if (!user && eventScope !== 'all') {
       setEventScope('all');
     }
   }, [user, eventScope]);
@@ -215,7 +233,9 @@ export function ExplorePage() {
       setDiceNotice(
         eventScope === 'created'
           ? 'No created events match the current filters.'
-          : 'No events match current filters. Adjust filters and try again.'
+          : eventScope === 'joined'
+            ? 'No joined events match the current filters.'
+            : 'No events match current filters. Adjust filters and try again.'
       );
       return;
     }
@@ -420,6 +440,13 @@ export function ExplorePage() {
       return;
     }
 
+    if (shakeMatchCandidates.length === 0) {
+      setShakeNotice(
+        'No joinable events match your current filters right now. Adjust filters and try again.'
+      );
+      return;
+    }
+
     try {
       const position = await requestCurrentPosition();
       setDistanceCenter(position);
@@ -437,6 +464,7 @@ export function ExplorePage() {
         body: {
           lat: position.lat,
           lng: position.lng,
+          candidateEventIds: shakeMatchCandidates.map((event) => event.id),
         },
       });
 
@@ -841,6 +869,24 @@ export function ExplorePage() {
                 </button>
 
                 <button
+                  onClick={() => setEventScope('joined')}
+                  className="px-4 py-2 rounded-full transition-all"
+                  style={{
+                    backgroundColor: eventScope === 'joined' ? '#B78A5C' : '#FFFFFF',
+                    color: '#2E1A1A',
+                    border: eventScope === 'joined' ? 'none' : '1px solid #E5E2DA',
+                    cursor: 'pointer',
+                    fontWeight: eventScope === 'joined' ? 600 : 500,
+                    boxShadow:
+                      eventScope === 'joined'
+                        ? '0 4px 12px rgba(183, 138, 92, 0.2)'
+                        : '0 2px 6px rgba(46, 26, 26, 0.04)',
+                  }}
+                >
+                  My Joined Events
+                </button>
+
+                <button
                   onClick={() => setEventScope('created')}
                   className="px-4 py-2 rounded-full transition-all"
                   style={{
@@ -866,6 +912,8 @@ export function ExplorePage() {
                   ? 'Loading events...'
                   : error
                     ? error
+                    : eventScope === 'joined'
+                      ? `${visibleEvents.length} joined event${visibleEvents.length === 1 ? '' : 's'}`
                     : eventScope === 'created'
                       ? `${visibleEvents.length} created event${visibleEvents.length === 1 ? '' : 's'}`
                       : `${visibleEvents.length} events found`}
@@ -1221,6 +1269,8 @@ export function ExplorePage() {
                 <p style={{ fontSize: '18px', color: '#6B6B6B' }}>
                   {eventScope === 'created'
                     ? 'You have not created any events matching these filters'
+                    : eventScope === 'joined'
+                      ? 'You have not joined any events matching these filters'
                     : 'No events found matching your criteria'}
                 </p>
 

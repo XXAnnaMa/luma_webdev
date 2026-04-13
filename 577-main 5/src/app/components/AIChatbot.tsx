@@ -27,6 +27,26 @@ interface ChatApiResponse {
   suggestions?: ChatSuggestion[];
 }
 
+function renderFormattedMessage(text: string) {
+  const normalized = text.replace(/\r\n/g, '\n');
+
+  return normalized.split('\n').map((line, lineIndex) => (
+    <div key={`line-${lineIndex}`}>
+      {line.length === 0 ? (
+        <>&nbsp;</>
+      ) : (
+        line.split(/(\*\*[^*]+\*\*)/g).map((segment, segmentIndex) => {
+          const boldMatch = segment.match(/^\*\*(.+)\*\*$/);
+          if (boldMatch) {
+            return <strong key={`segment-${lineIndex}-${segmentIndex}`}>{boldMatch[1]}</strong>;
+          }
+          return <span key={`segment-${lineIndex}-${segmentIndex}`}>{segment}</span>;
+        })
+      )}
+    </div>
+  ));
+}
+
 const CATEGORY_KEYWORDS: Record<string, string[]> = {
   Music: ['music', 'concert', 'jazz', 'live music'],
   Art: ['art', 'gallery', 'exhibition'],
@@ -391,7 +411,7 @@ export function AIChatbot() {
                       lineHeight: 1.5,
                     }}
                   >
-                    <div style={{ whiteSpace: 'pre-wrap' }}>{message.text}</div>
+                    <div>{renderFormattedMessage(message.text)}</div>
                     {message.suggestions && message.suggestions.length > 0 && (
                       <div className="mt-3 space-y-2">
                         {message.suggestions.map((item) => (

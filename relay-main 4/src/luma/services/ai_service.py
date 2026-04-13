@@ -102,7 +102,12 @@ class AIService:
             raise ChatPersistenceError("Failed to read context data from database.") from exc
 
         matched_events, match_mode = self._match_events(query=query, events=events)
-        suggestions = self._build_suggestions(matched_events or self._sort_events(events)[:3])
+        suggestions = self._build_suggestions_for_query(
+            query=query,
+            matched_events=matched_events,
+            all_events=events,
+            mode=match_mode,
+        )
 
         if not self.client or not settings.openai_api_key:
             reply = self._build_fallback_reply(
@@ -192,7 +197,7 @@ class AIService:
     def _build_messages(self, *, query: str, history, event_context: str) -> list[dict[str, str]]:
         system_prompt = (
             "You are the event assistant for the Luma platform. Your answers must be based on "
-            "the system-provided event data and the user's question. If data is insufficient, "
+            "the system-provided event data and the user's question. Use plain text only. Do NOT use Markdown. If data is insufficient, "
             "state that clearly. Here is the activity JSON from the database:\n"
             f"{event_context}"
         )
@@ -309,6 +314,60 @@ class AIService:
             )
             for event in events[:3]
         ]
+
+    def _build_suggestions_for_query(
+        self,
+        *,
+        query: str,
+        matched_events,
+        all_events,
+        mode: str,
+    ) -> list[ChatSuggestion]:
+        if not self._should_include_suggestions(query=query, mode=mode):
+            return []
+
+        base_events = matched_events or self._sort_events(all_events)[:3]
+        return self._build_suggestions(base_events)
+
+    def _should_include_suggestions(self, *, query: str, mode: str) -> bool:
+        lower = query.lower()
+
+        detail_keywords = [
+            "location",
+            "address",
+            "where",
+            "time",
+            "when",
+            "date",
+            "first event",
+            "second event",
+            "third event",
+            "first one",
+            "second one",
+            "third one",
+            "tell me more",
+            "details",
+            "detail",
+        ]
+        if any(keyword in lower for keyword in detail_keywords):
+            return False
+
+        discovery_keywords = [
+            "find",
+            "show",
+            "recommend",
+            "suggest",
+            "nearby",
+            "any",
+            "events",
+            "event",
+            "what's on",
+            "what is on",
+            "things to do",
+        ]
+        return mode in {"strict", "relaxed", "fallback"} and any(
+            keyword in lower for keyword in discovery_keywords
+        )
 
     def _build_fallback_reply(
         self,

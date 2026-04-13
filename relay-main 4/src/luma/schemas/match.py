@@ -8,8 +8,11 @@ from luma.schemas.user import UserRead
 
 
 class ActivateRequest(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
     lat: float
     lng: float
+    candidate_event_ids: list[UUID] = Field(default_factory=list, alias="candidateEventIds")
 
 
 class NearbyEventMatchRequest(BaseModel):

@@ -4,6 +4,7 @@ from uuid import UUID
 
 from luma.cache import match_pool
 from luma.repositories.event_repository import EventRepository
+from luma.repositories.registration_repository import RegistrationRepository
 from luma.repositories.user_repository import UserRepository
 from luma.schemas.event import Location, MapEventRead
 from luma.schemas.match import MatchStatusResponse, NearbyEventMatchResponse
@@ -11,12 +12,29 @@ from luma.schemas.user import UserRead
 
 
 class MatchService:
-    def __init__(self, user_repo: UserRepository, event_repo: EventRepository) -> None:
+    def __init__(
+        self,
+        user_repo: UserRepository,
+        event_repo: EventRepository,
+        registration_repo: RegistrationRepository,
+    ) -> None:
         self.user_repo = user_repo
         self.event_repo = event_repo
+        self.registration_repo = registration_repo
 
-    async def activate(self, user_id: int, lat: float, lng: float) -> MatchStatusResponse:
-        await match_pool.add_to_pool(user_id, lat, lng)
+    async def activate(
+        self,
+        user_id: int,
+        lat: float,
+        lng: float,
+        candidate_event_ids: list[UUID] | None = None,
+    ) -> MatchStatusResponse:
+        await match_pool.add_to_pool(
+            user_id,
+            lat,
+            lng,
+            candidate_event_ids=[str(event_id) for event_id in (candidate_event_ids or [])],
+        )
         result = await self._find_and_create_match(user_id, lat, lng)
         if result:
             return result
@@ -112,7 +130,19 @@ class MatchService:
         else:
             mid_lat, mid_lng = lat, lng
 
-        suggested_event = await self._suggest_event(mid_lat, mid_lng)
+        current_meta = await match_pool.get_meta(user_id) or {}
+        other_meta = await match_pool.get_meta(other_id) or {}
+        current_candidate_ids = self._parse_candidate_event_ids(current_meta.get("candidate_event_ids"))
+        other_candidate_ids = self._parse_candidate_event_ids(other_meta.get("candidate_event_ids"))
+        candidate_event_ids = self._combine_candidate_event_ids(current_candidate_ids, other_candidate_ids)
+
+        suggested_event = await self._suggest_event(
+            mid_lat,
+            mid_lng,
+            current_user_id=user_id,
+            other_user_id=other_id,
+            candidate_event_ids=candidate_event_ids,
+        )
 
         current_user_data = UserRead.model_validate(current_user).model_dump()
         other_user_data = UserRead.model_validate(other_user).model_dump()
@@ -140,11 +170,52 @@ class MatchService:
             suggested_event=suggested_event,
         )
 
-    async def _suggest_event(self, lat: float, lng: float) -> MapEventRead | None:
-        events = await self.event_repo.find_nearest(lat, lng)
+    async def _suggest_event(
+        self,
+        lat: float,
+        lng: float,
+        *,
+        current_user_id: int,
+        other_user_id: int,
+        candidate_event_ids: list[UUID] | None = None,
+    ) -> MapEventRead | None:
+        events, _ = await self.event_repo.list_events(limit=500)
         if not events:
             return None
-        event = events[0]
+
+        candidate_id_set = set(candidate_event_ids or [])
+        if candidate_id_set:
+            events = [event for event in events if event.id in candidate_id_set]
+
+        if not events:
+            return None
+
+        event_ids = [event.id for event in events]
+        current_registered_ids = await self.registration_repo.get_registered_event_ids(
+            current_user_id,
+            event_ids,
+        )
+        other_registered_ids = await self.registration_repo.get_registered_event_ids(
+            other_user_id,
+            event_ids,
+        )
+
+        eligible_events = [
+            event
+            for event in events
+            if event.id not in current_registered_ids
+            and event.id not in other_registered_ids
+            and event.user_id not in {current_user_id, other_user_id}
+            and event.current_participants < event.participant_limit
+        ]
+
+        if not eligible_events:
+            return None
+
+        event = min(
+            eligible_events,
+            key=lambda item: self._distance_km(lat, lng, item.latitude, item.longitude),
+        )
         return MapEventRead.model_validate(
             {
                 "id": event.id,
@@ -156,6 +227,29 @@ class MatchService:
                 "location": Location(lat=event.latitude, lng=event.longitude),
             }
         )
+
+    def _parse_candidate_event_ids(self, raw_ids: object) -> list[UUID]:
+        parsed: list[UUID] = []
+        for raw_id in raw_ids or []:
+            try:
+                parsed.append(UUID(str(raw_id)))
+            except (TypeError, ValueError):
+                continue
+        return parsed
+
+    def _combine_candidate_event_ids(
+        self,
+        current_ids: list[UUID],
+        other_ids: list[UUID],
+    ) -> list[UUID] | None:
+        if current_ids and other_ids:
+            other_id_set = set(other_ids)
+            return [event_id for event_id in current_ids if event_id in other_id_set]
+        if current_ids:
+            return current_ids
+        if other_ids:
+            return other_ids
+        return None
 
     def _distance_km(self, a_lat: float, a_lng: float, b_lat: float, b_lng: float) -> float:
         to_rad = math.radians

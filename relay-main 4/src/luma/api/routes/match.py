@@ -7,6 +7,7 @@ from luma.api.deps import get_current_user_id
 from luma.cache import match_pool
 from luma.db.session import get_db_session
 from luma.repositories.event_repository import EventRepository
+from luma.repositories.registration_repository import RegistrationRepository
 from luma.repositories.user_repository import UserRepository
 from luma.schemas.match import (
     ActivateRequest,
@@ -20,7 +21,11 @@ router = APIRouter()
 
 
 def _get_service(session: Annotated[AsyncSession, Depends(get_db_session)]) -> MatchService:
-    return MatchService(UserRepository(session), EventRepository(session))
+    return MatchService(
+        UserRepository(session),
+        EventRepository(session),
+        RegistrationRepository(session),
+    )
 
 
 @router.post("/activate", response_model=MatchStatusResponse, status_code=status.HTTP_200_OK)
@@ -34,7 +39,12 @@ async def activate(
             status_code=status.HTTP_409_CONFLICT,
             detail="Already in matching pool",
         )
-    return await service.activate(user_id, body.lat, body.lng)
+    return await service.activate(
+        user_id,
+        body.lat,
+        body.lng,
+        candidate_event_ids=body.candidate_event_ids,
+    )
 
 
 @router.get("/status", response_model=MatchStatusResponse)
